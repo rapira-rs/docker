@@ -1,0 +1,38 @@
+{
+	"8.4": {
+		"variants": [
+			"trixie/nts",
+			"trixie/zts",
+			"bookworm/nts",
+			"bookworm/zts",
+			"alpine3.24/nts",
+			"alpine3.24/zts",
+			"alpine3.23/nts",
+			"alpine3.23/zts"
+		]
+	},
+	"8.5": {
+		"variants": [
+			"trixie/nts",
+			"trixie/zts",
+			"bookworm/nts",
+			"bookworm/zts",
+			"alpine3.24/nts",
+			"alpine3.24/zts",
+			"alpine3.23/nts",
+			"alpine3.23/zts"
+		]
+	},
+	"8.6": {
+		"variants": [
+			"trixie/nts",
+			"trixie/zts",
+			"bookworm/nts",
+			"bookworm/zts",
+			"alpine3.24/nts",
+			"alpine3.24/zts",
+			"alpine3.23/nts",
+			"alpine3.23/zts"
+		]
+	}
+}

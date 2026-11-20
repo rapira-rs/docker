@@ -1,0 +1,374 @@
+{{
+	def is_alpine:
+		env.from | startswith("alpine")
+	;
+	def rcVersion:
+		env.version | rtrimstr("-rc")
+	;
+	def clean_apt:
+		# TODO once bookworm is EOL, remove this and just hard-code "apt-get dist-clean" instead
+		if env.from | contains("bookworm") then
+			"rm -rf /var/lib/apt/lists/*"
+		else "apt-get dist-clean" end
+	;
+	def install_pear_pecl:
+		# https://github.com/docker-library/php/issues/1554
+		IN(rcVersion; "8.4", "8.5")
+-}}
+# Based on Dockerfile-linux.template of https://github.com/docker-library/php at commit 3b25f4162a9bd144d3f447d03cb8fe16c0d2c9cc.
+
+# The PHP source tarball, made from the signed php-src tag.
+FROM debian:trixie-slim AS php-source
+
+ENV GPG_KEYS {{
+	{
+		# https://www.php.net/gpg-keys.php
+		# https://www.php.net/downloads.php
+
+		"8.6": [
+			# https://wiki.php.net/todo/php86#release_managers
+			# https://www.php.net/gpg-keys.php#gpg-8.6
+			"D95C 03BC 702B E951 5344  AE33 74E4 4BC9 0677 01A5", # daniels
+			"0168 95DE 9A47 5111 D537  A6E6 9134 FF30 BC5A 99B5", # mbeccati
+			"5CFF 17B6 4DC1 C244 F5D0  EAC3 E435 35E2 EB19 010E"  # svpernova09
+		],
+
+		"8.5": [
+			# https://wiki.php.net/todo/php85#release_managers
+			# https://www.php.net/gpg-keys.php#gpg-8.5
+			"1198 C011 7593 497A 5EC5  C199 286A F1F9 8974 69DC", # pierrick
+			"49D9 AF6B C72A 80D6 6917  19C8 AA23 F5BE 9C70 97D4", # edorian
+			"D95C 03BC 702B E951 5344  AE33 74E4 4BC9 0677 01A5"  # daniels
+		],
+
+		"8.4": [
+			# https://wiki.php.net/todo/php84#release_managers
+			# https://www.php.net/gpg-keys.php#gpg-8.4
+			"AFD8 691F DAED F03B DF6E  4605 63F1 5A9B 7153 76CA", # ericmann
+			"9D7F 99A0 CB8F 05C8 A695  8D62 56A9 7AF7 600A 39A6", # calvinb
+			"0616 E93D 95AF 4712 43E2  6761 7704 26E1 7EBB B3DD"  # saki
+		],
+	}[rcVersion] // error("missing GPG keys for " + rcVersion)
+	| map(gsub(" "; ""))
+	| join(" ")
+}}
+
+ARG PHP_VERSION
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends \
+		autoconf bison bzip2 ca-certificates dirmngr git gpg gpg-agent make re2c xz-utils; \
+	git init -q /src; \
+	cd /src; \
+	git fetch --depth 1 https://github.com/php/php-src.git "refs/tags/php-$PHP_VERSION:refs/tags/php-$PHP_VERSION"; \
+	export GNUPGHOME="$(mktemp -d)"; \
+	for key in $GPG_KEYS; do \
+		gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "$key"; \
+	done; \
+	git verify-tag "php-$PHP_VERSION"; \
+	git checkout -q "php-$PHP_VERSION"; \
+	scripts/dev/makedist "php-$PHP_VERSION"; \
+	mv "php-$PHP_VERSION.tar.xz" /php.tar.xz
+
+FROM {{ env.from }}
+
+{{ if is_alpine then "" else ( -}}
+# prevent Debian's PHP packages from being installed
+# https://github.com/docker-library/php/pull/542
+RUN set -eux; \
+	{ \
+		echo 'Package: php*'; \
+		echo 'Pin: release *'; \
+		echo 'Pin-Priority: -1'; \
+	} > /etc/apt/preferences.d/no-debian-php
+
+{{ ) end -}}
+# dependencies required for running "phpize"
+{{ if is_alpine then ( -}}
+# these get automatically installed and removed by "docker-php-ext-*" (unless they're already installed)
+{{ ) else ( -}}
+# (see persistent deps below)
+{{ ) end -}}
+ENV PHPIZE_DEPS \
+		autoconf \
+		dpkg-dev {{ if is_alpine then "dpkg " else "" end }}\
+		file \
+		g++ \
+		gcc \
+		libc-dev \
+		make \
+		{{ if is_alpine then "pkgconf" else "pkg-config" end }} \
+		re2c
+
+# persistent / runtime deps
+{{ if is_alpine then ( -}}
+RUN set -eux; \
+	apk upgrade --no-cache; \
+	apk add --no-cache \
+		ca-certificates \
+		curl \
+		openssl \
+		tar \
+		xz
+
+# ensure www-data user exists
+RUN set -eux; \
+	adduser -u 82 -D -S -G www-data www-data
+# 82 is the standard uid/gid for "www-data" in Alpine
+# https://git.alpinelinux.org/aports/tree/main/apache2/apache2.pre-install?h=3.14-stable
+# https://git.alpinelinux.org/aports/tree/main/lighttpd/lighttpd.pre-install?h=3.14-stable
+# https://git.alpinelinux.org/aports/tree/main/nginx/nginx.pre-install?h=3.14-stable
+{{ ) else ( -}}
+RUN set -eux; \
+	apt-get update; \
+	apt-get upgrade -y; \
+	apt-get install -y --no-install-recommends \
+		$PHPIZE_DEPS \
+		ca-certificates \
+		curl \
+		xz-utils \
+	; \
+	{{ clean_apt }}
+{{ ) end -}}
+
+ENV PHP_INI_DIR /usr/local/etc/php
+RUN set -eux; \
+	mkdir -p "$PHP_INI_DIR/conf.d"; \
+# allow running as an arbitrary user (https://github.com/docker-library/php/issues/743)
+	[ ! -d /var/www/html ]; \
+	mkdir -p /var/www/html; \
+	chown www-data:www-data /var/www/html; \
+	chmod 1777 /var/www/html
+
+# Apply stack smash protection to functions using local buffers and alloca()
+# Make PHP's main executable position-independent (improves ASLR security mechanism, and has no performance impact on x86_64)
+# Enable optimization (-O2)
+# Enable linker optimization (this sorts the hash buckets to improve cache locality, and is non-default)
+# https://github.com/docker-library/php/issues/272
+# -D_LARGEFILE_SOURCE and -D_FILE_OFFSET_BITS=64 (https://www.php.net/manual/en/intro.filesystem.php)
+ENV PHP_CFLAGS="-fstack-protector-strong -fpic -fpie -O2 -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64"
+ENV PHP_CPPFLAGS="$PHP_CFLAGS"
+ENV PHP_LDFLAGS="-Wl,-O1 -pie"
+
+ARG PHP_VERSION
+ENV PHP_VERSION=$PHP_VERSION
+COPY --from=php-source /php.tar.xz /usr/src/php.tar.xz
+
+COPY docker-php-source /usr/local/bin/
+
+RUN set -eux; \
+{{ if is_alpine then ( -}}
+	apk add --no-cache --virtual .build-deps \
+{{ ) else ( -}}
+	\
+	savedAptMark="$(apt-mark showmanual)"; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends \
+{{ ) end -}}
+{{
+	[
+		[ if is_alpine then
+			# alpine packages
+			"$PHPIZE_DEPS",
+			"argon2-dev",
+			"coreutils",
+			"curl-dev",
+			"gnu-libiconv-dev", # https://www.php.net/manual/en/intro.iconv.php "it'd be a good idea to install the GNU libiconv library"
+			"libsodium-dev",
+			"libxml2-dev",
+			"openssl-dev",
+			"readline-dev",
+			"sqlite-dev",
+			# https://github.com/docker-library/php/issues/888
+			"linux-headers",
+			# oniguruma is part of mbstring in php 7.4+
+			if install_pear_pecl then "oniguruma-dev" else empty end
+		else
+			# debian packages
+			"libargon2-dev",
+			"libcurl4-openssl-dev",
+			"libreadline-dev",
+			"libsodium-dev",
+			"libsqlite3-dev",
+			"libssl-dev",
+			"libxml2-dev",
+			"zlib1g-dev",
+			# oniguruma is part of mbstring in php 7.4+
+			if install_pear_pecl then "libonig-dev" else empty end
+		end ] | sort[] | (
+-}}
+		{{ . }} \
+{{
+		)
+	] | add
+-}}
+	; \
+	\
+{{ if is_alpine then ( -}}
+# make sure musl's iconv doesn't get used (https://www.php.net/manual/en/intro.iconv.php)
+	rm -vf /usr/include/iconv.h; \
+	\
+{{ ) else "" end -}}
+	export \
+		CFLAGS="$PHP_CFLAGS" \
+		CPPFLAGS="$PHP_CPPFLAGS" \
+		LDFLAGS="$PHP_LDFLAGS" \
+# https://github.com/php/php-src/blob/d6299206dd828382753453befd1b915491b741c6/configure.ac#L1496-L1511
+		PHP_BUILD_PROVIDER='https://github.com/rapira-rs/docker' \
+		PHP_UNAME='Linux - Docker' \
+	; \
+	docker-php-source extract; \
+	cd /usr/src/php; \
+	gnuArch="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)"; \
+{{ if is_alpine then "" else ( -}}
+	debMultiarch="$(dpkg-architecture --query DEB_BUILD_MULTIARCH)"; \
+# https://bugs.php.net/bug.php?id=74125
+	if [ ! -d /usr/include/curl ]; then \
+		ln -sT "/usr/include/$debMultiarch/curl" /usr/local/include/curl; \
+	fi; \
+{{ ) end -}}
+	case "$gnuArch" in \
+		'i686-linux-'*) \
+			# php zend jit assumes SSE registers, xmm0-7, are available (and "Pentium4"/SSE2 is a reasonable baseline)
+			# https://github.com/php/php-src/pull/22832
+			# so, allow it and use SSE/SSE2 floating-point unit instead of the legacy stack
+			export \
+				CFLAGS="$CFLAGS -msse2 -mfpmath=sse" \
+				CPPFLAGS="$CPPFLAGS -msse2 -mfpmath=sse" \
+			; \
+			;; \
+	esac; \
+	test "$PHP_INI_DIR" != "${PHP_INI_DIR%/php}"; \
+	./configure \
+		--build="$gnuArch" \
+		--sysconfdir="${PHP_INI_DIR%/php}" \
+		--with-config-file-path="$PHP_INI_DIR" \
+		--with-config-file-scan-dir="$PHP_INI_DIR/conf.d" \
+		\
+# make sure invalid --configure-flags are fatal errors instead of just warnings
+		--enable-option-checking=fatal \
+		\
+# https://github.com/docker-library/php/issues/439
+		--with-mhash \
+		\
+{{ if rcVersion | IN("8.4", "8.5") then ( -}}
+# https://github.com/docker-library/php/issues/822
+		--with-pic \
+		\
+{{ ) else ( -}}
+# no --enable-pic; forcing PIC also removes -fpie from executable objects, preventing local-exec TLS: https://github.com/docker-library/php/pull/1692
+{{ ) end -}}
+{{ if install_pear_pecl then ( -}}
+# --enable-mbstring is included here because otherwise there's no way to get pecl to use it properly (see https://github.com/docker-library/php/issues/195)
+		--enable-mbstring \
+{{ ) else "" end -}}
+# --enable-mysqlnd is included here because it's harder to compile after the fact than extensions are (since it's a plugin for several extensions, not an extension in itself)
+		--enable-mysqlnd \
+# https://wiki.php.net/rfc/argon2_password_hash
+		--with-password-argon2 \
+# https://wiki.php.net/rfc/libsodium
+		--with-sodium=shared \
+# always build against system sqlite3 (https://github.com/php/php-src/commit/6083a387a81dbbd66d6316a3a12a63f06d5f7109)
+		--with-pdo-sqlite=/usr \
+		--with-sqlite3=/usr \
+		\
+		--with-curl \
+		--with-iconv{{ if is_alpine then "=/usr" else "" end }} \
+		--with-openssl \
+		--with-readline \
+		--with-zlib \
+		\
+# https://github.com/docker-library/php/pull/1259
+		--enable-phpdbg \
+		--enable-phpdbg-readline \
+		\
+{{ if install_pear_pecl then ( -}}
+# in PHP 7.4+, the pecl/pear installers are officially deprecated (requiring an explicit "--with-pear")
+		--with-pear \
+		\
+{{ ) else "" end -}}
+{{ if is_alpine then "" else ( -}}
+		--with-libdir="lib/$debMultiarch" \
+{{ ) end -}}
+		\
+# https://github.com/docker-library/php/pull/939#issuecomment-730501748
+		--enable-embed \
+{{ if env.variant == "zts" then ( -}}
+		\
+		--enable-zts \
+# https://externals.io/message/118859
+		--disable-zend-signals \
+{{ ) else "" end -}}
+	; \
+	make -j "$(nproc)"; \
+	find -type f -name '*.a' -delete; \
+	make install; \
+	find \
+		/usr/local \
+		-type f \
+		-perm '/0111' \
+		-exec sh -euxc ' \
+			strip --strip-all "$@" || : \
+		' -- '{}' + \
+	; \
+	make clean; \
+	\
+# https://github.com/docker-library/php/issues/692 (copy default example "php.ini" files somewhere easily discoverable)
+	cp -v php.ini-* "$PHP_INI_DIR/"; \
+	\
+	cd /; \
+	docker-php-source delete; \
+	\
+{{ if is_alpine then ( -}}
+	runDeps="$( \
+		scanelf --needed --nobanner --format '%n#p' --recursive /usr/local \
+			| tr ',' '\n' \
+			| sort -u \
+			| awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
+	)"; \
+	apk add --no-cache $runDeps; \
+	\
+	apk del --no-network .build-deps; \
+{{ ) else ( -}}
+# reset apt-mark's "manual" list so that "purge --auto-remove" will remove all build dependencies
+	apt-mark auto '.*' > /dev/null; \
+	[ -z "$savedAptMark" ] || apt-mark manual $savedAptMark; \
+	find /usr/local -type f -executable -exec ldd '{}' ';' \
+		| awk '/=>/ { so = $(NF-1); if (index(so, "/usr/local/") == 1) { next }; gsub("^/(usr/)?", "", so); printf "*%s\n", so }' \
+		| sort -u \
+		| xargs -rt dpkg-query --search \
+# https://manpages.debian.org/trixie/dpkg/dpkg-query.1.en.html#S (we ignore diversions and it'll be really unusual for more than one package to provide any given .so file)
+		| awk 'sub(":$", "", $1) { print $1 }' \
+		| sort -u \
+		| xargs -r apt-mark manual \
+	; \
+	apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false; \
+	{{ clean_apt }}; \
+{{ ) end -}}
+	\
+{{ if install_pear_pecl then ( -}}
+# update pecl channel definitions https://github.com/docker-library/php/issues/443
+	pecl update-channels; \
+	rm -rf /tmp/pear ~/.pearrc; \
+	\
+{{ ) else "" end -}}
+# smoke test
+	php --version
+
+COPY docker-php-ext-* docker-php-entrypoint /usr/local/bin/
+COPY LICENSE.docker-library /usr/local/share/doc/docker-library-php/LICENSE
+
+{{ if IN(rcVersion; "8.4") then ( -}}
+# enable OPcache by default (https://wiki.php.net/rfc/make_opcache_required)
+RUN docker-php-ext-enable opcache
+
+{{ ) else "" end -}}
+# sodium was built as a shared module (so that it can be replaced later if so desired), so let's enable it too (https://github.com/docker-library/php/issues/598)
+RUN docker-php-ext-enable sodium
+
+LABEL org.opencontainers.image.title="PHP" \
+	org.opencontainers.image.description="{{ env.variant | ascii_upcase }} PHP {{ env.version }} on {{ env.suite }}" \
+	org.opencontainers.image.url="https://rapira.rs" \
+	org.opencontainers.image.source="https://github.com/rapira-rs/docker"
+ENTRYPOINT ["docker-php-entrypoint"]
+CMD ["php", "-a"]
