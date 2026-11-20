@@ -43,7 +43,7 @@ The Dockerfiles in `<minor>/<suite>/<variant>/` are generated. Do not edit them.
 
 1. Edit `Dockerfile-linux.template` or `versions.json`.
 2. Run `./apply-templates.sh`. It needs bash, gawk, jq and wget.
-3. Commit the template and the generated files together. The `Verify Templating` workflow fails when they differ.
+3. Commit the template, `versions.json` and the generated files together. The `Verify Templating` workflow fails when they differ.
 
 `versions.json` lists the minors and their variants. A new minor also needs the keys of its release managers in the `GPG_KEYS` block of the template.
 
@@ -52,6 +52,8 @@ Build one image locally from the repository root:
 ```sh
 docker build -f 8.5/alpine3.24/nts/Dockerfile --build-arg PHP_VERSION=8.5.13 .
 ```
+
+`PHP_VERSION` must be 8.4.28, 8.5.13, 8.6.0 or a newer patch release of the minor. For older tags, `makedist` downloads the PEAR installer with wget, and the source stage has no wget.
 
 The template is based on `Dockerfile-linux.template` of [docker-library/php](https://github.com/docker-library/php) at commit `3b25f4162a9bd144d3f447d03cb8fe16c0d2c9cc`. Upstream changes are copied by hand.
 
