@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Daily, so that merged updates keep the schedule of php.yml active.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
