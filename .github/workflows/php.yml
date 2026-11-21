@@ -1,15 +1,11 @@
-# Builds the PHP images when php-src tags a patch release, when a generated Dockerfile changes on main, and one time each week for package fixes.
-# The state is on the images: the annotations of ghcr.io/<owner>/php:<minor>-nts.
+# Builds the PHP images when a version in versions.json or a generated Dockerfile changes on main.
+# Renovate changes the versions. A weekly workflow_dispatch with force builds all images again for package fixes.
+# The built version is on the images: the annotations of ghcr.io/<owner>/php:<minor>-nts.
 name: PHP images
 on:
-    schedule:
-        # GitHub delays or drops scheduled runs under high load, for example at the start of each hour: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
-        - cron: "7,22,37,52 * * * *"
-        # The activity job.
-        - cron: "41 6 * * 1"
     push:
         branches: [main]
-        paths: ["8.*/**", "docker-php-*", "LICENSE.docker-library"]
+        paths: ["versions.json", "8.*/**", "docker-php-*", "LICENSE.docker-library"]
     workflow_dispatch:
         inputs:
             force:
@@ -28,25 +24,6 @@ env:
     PHP_IMAGE: ghcr.io/${{ github.repository_owner }}/php
 
 jobs:
-    activity:
-        # GitHub disables the schedule of a public repository after 60 days without repository activity: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
-        if: github.event.schedule == '41 6 * * 1'
-        runs-on: ubuntu-26.04
-        timeout-minutes: 5
-        steps:
-            - shell: bash
-              env:
-                  GH_TOKEN: ${{ github.token }}
-              run: |
-                  set -euo pipefail
-                  LAST=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .commit.committer.date)
-                  AGE=$(( ($(date +%s) - $(date -d "$LAST" +%s)) / 86400 ))
-                  echo "The newest commit on $GITHUB_REF_NAME is $AGE days old ($LAST)."
-                  if [ "$AGE" -ge 45 ]; then
-                      echo "::error::No commit on $GITHUB_REF_NAME for $AGE days. GitHub disables the schedule of this workflow at 60 days. Merge a pull request or push a commit before that day."
-                      exit 1
-                  fi
-
     php-check:
         runs-on: ubuntu-26.04
         timeout-minutes: 5
@@ -60,6 +37,8 @@ jobs:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
+                  # The diff of a push needs the commit before the push.
+                  fetch-depth: 0
             - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
             - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
               with:
@@ -69,23 +48,23 @@ jobs:
             - id: check
               shell: bash
               env:
-                  FORCE: ${{ github.event_name == 'push' || inputs.force }}
+                  FORCE: ${{ inputs.force }}
+                  BEFORE: ${{ github.event.before }}
               run: |
                   set -euo pipefail
+                  # A push that changes a Dockerfile or a script builds all minors.
+                  if [ "$GITHUB_EVENT_NAME" = push ] && ! git diff --quiet "$BEFORE" "$GITHUB_SHA" -- '8.*' 'docker-php-*' LICENSE.docker-library; then
+                      FORCE=true
+                  fi
                   : > minors.json
                   for MINOR in $(jq -r 'keys[]' versions.json); do
-                      NEWEST=$(git ls-remote --tags --refs https://github.com/php/php-src.git "refs/tags/php-$MINOR.*" \
-                          | sed -n -E 's|.*refs/tags/php-([0-9]+\.[0-9]+\.[0-9]+)$|\1|p' | sort -V | tail -n 1)
-                      [ -n "$NEWEST" ] || { echo "::error::no stable php-src tag for PHP $MINOR"; exit 1; }
+                      VERSION=$(jq -r --arg m "$MINOR" '.[$m].version' versions.json)
                       # The merge job moves <minor>-nts last.
                       INDEX=$(docker buildx imagetools inspect --raw "$PHP_IMAGE:$MINOR-nts" || true)
                       HAVE=$(jq -r '.annotations["org.opencontainers.image.version"] // empty' <<< "$INDEX")
-                      CREATED=$(jq -r '.annotations["org.opencontainers.image.created"] // empty' <<< "$INDEX")
-                      echo "PHP $MINOR: image has '$HAVE', built '$CREATED'; php-src has $NEWEST"
-                      if [ "$FORCE" = true ] || [ -z "$HAVE" ] \
-                          || [ "$(printf '%s\n' "$HAVE" "$NEWEST" | sort -V | tail -n 1)" != "$HAVE" ] \
-                          || [ $(( $(date +%s) - $(date -d "$CREATED" +%s) )) -ge 604800 ]; then
-                          jq -cn --arg php "$MINOR" --arg version "$NEWEST" '{php: $php, version: $version}' >> minors.json
+                      echo "PHP $MINOR: image has '$HAVE', versions.json has $VERSION"
+                      if [ "$FORCE" = true ] || [ "$HAVE" != "$VERSION" ]; then
+                          jq -cn --arg php "$MINOR" --arg version "$VERSION" '{php: $php, version: $version}' >> minors.json
                       fi
                   done
                   {

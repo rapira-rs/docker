@@ -33,9 +33,11 @@ The Rapira image `ghcr.io/rapira-rs/rapira` uses the `nts` trixie image and adds
 
 ## Updates
 
-The `PHP images` workflow polls php-src every 15 minutes. It builds the images of a minor again when php-src has a newer patch tag, when the images are 7 days old, and when a generated Dockerfile changes on `main`.
+`versions.json` holds the PHP version of each minor. Renovate checks the php-src tags every 15 minutes, with the config in `renovate.json`. For a new patch tag `php-X.Y.Z`, it opens a pull request that changes the version of the minor, and merges it when the `Verify Templating` check passes.
 
-GitHub disables the schedule of a public repository after 60 days without activity ([docs](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)). A weekly job of the workflow fails when the newest commit on `main` is older than 45 days. Merge a pull request or push a commit before day 60.
+The `PHP images` workflow builds the images of a minor when its version changes on `main`. It builds the images of all minors when a generated Dockerfile or a `docker-php-*` script changes. A weekly `workflow_dispatch` with `force` builds all images again, so that they get the newest packages of the suite.
+
+Renovate and the weekly dispatch run as CronJobs in a Kubernetes cluster of the owner and sign in as the GitHub App `rapira-renovate`.
 
 ## Change the Dockerfiles
 
@@ -45,7 +47,7 @@ The Dockerfiles in `<minor>/<suite>/<variant>/` are generated. Do not edit them.
 2. Run `./apply-templates.sh`. It needs bash, gawk, jq and wget.
 3. Commit the template, `versions.json` and the generated files together. The `Verify Templating` workflow fails when they differ.
 
-`versions.json` lists the minors and their variants. A new minor also needs the keys of its release managers in the `GPG_KEYS` block of the template.
+`versions.json` lists the minors, the PHP version of each minor and its variants. A new minor also needs the keys of its release managers in the `GPG_KEYS` block of the template.
 
 Build one image locally from the repository root:
 
