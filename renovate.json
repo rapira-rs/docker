@@ -38,6 +38,9 @@
 	"dependencyDashboard": {
 		"enabled": false
 	},
+	"vulnerabilityAlerts": {
+		"enabled": false
+	},
 	"semanticCommits": "enabled",
 	"semanticCommitType": "feat",
 	"semanticCommitScope": null,
