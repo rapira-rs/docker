@@ -1,0 +1,46 @@
+{
+	"$schema": "https://docs.renovatebot.com/renovate-schema.json",
+	"enabledManagers": [
+		"custom.regex"
+	],
+	"customManagers": [
+		{
+			"customType": "regex",
+			"description": "The PHP version of each minor in versions.json, from the php-src tags php-X.Y.Z",
+			"managerFilePatterns": [
+				"/^versions\\.json$/"
+			],
+			"matchStrings": [
+				"\"version\": \"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
+			],
+			"datasourceTemplate": "github-tags",
+			"depNameTemplate": "php/php-src",
+			"extractVersionTemplate": "^php-(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)$",
+			"versioningTemplate": "semver"
+		}
+	],
+	"packageRules": [
+		{
+			"description": "Each minor gets only its patch releases. A new minor needs the keys of its release managers in the template.",
+			"matchDepNames": [
+				"php/php-src"
+			],
+			"matchUpdateTypes": [
+				"major",
+				"minor"
+			],
+			"enabled": false
+		}
+	],
+	"separateMinorPatch": true,
+	"automerge": true,
+	"platformCommit": "enabled",
+	"dependencyDashboard": {
+		"enabled": false
+	},
+	"semanticCommits": "enabled",
+	"semanticCommitType": "feat",
+	"semanticCommitScope": null,
+	"commitMessageTopic": "PHP",
+	"commitMessageExtra": "to {{newVersion}}"
+}

@@ -1,5 +1,6 @@
 {
 	"8.4": {
+		"version": "8.4.28",
 		"variants": [
 			"trixie/nts",
 			"trixie/zts",
@@ -12,6 +13,7 @@
 		]
 	},
 	"8.5": {
+		"version": "8.5.13",
 		"variants": [
 			"trixie/nts",
 			"trixie/zts",
@@ -24,6 +26,7 @@
 		]
 	},
 	"8.6": {
+		"version": "8.6.0",
 		"variants": [
 			"trixie/nts",
 			"trixie/zts",
